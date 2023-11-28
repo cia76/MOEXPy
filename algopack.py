@@ -14,26 +14,35 @@ limit = 10_000  # Какое кол-во записей будем получа�
 
 
 def save_candles_to_files(symbols=('SBER',), time_frames=('D',),
-                          skip_first_date=False, skip_last_date=False, four_price_doji=False):
+                          skip_first_date=False, skip_last_date=False, four_price_doji=False,
+                          date_format='%d.%m.%Y %H:%M', sep='\t', decimal="."):
     """Сохранение баров тикеров по временнЫм интервалам в файлы
         :param tuple symbols: Коды тикеров в виде кортежа
         :param tuple time_frames: ВременнЫе интервалы в виде кортежа. В минутах (int) 1, 10, 60 или код ("D" - дни, "W" - недели, "M" - месяцы, "Q" - кварталы)
         :param bool skip_first_date: Убрать бары на первую полученную дату
         :param bool skip_last_date: Убрать бары на последнюю полученную дату
         :param bool four_price_doji: Оставить бары с дожи 4-х цен
+        :param str date_format: Формат поля даты для выгрузки в csv
+        :param str sep: Разделитель для выгрузки в csv
+        :param str decimal: Разделитель float для выгрузки в csv
     """
     for symbol in symbols:  # Пробегаемся по всем тикерам
         for time_frame in time_frames:  # Пробегаемся по всем временнЫм интервалам
-            save_candles_to_file(symbol, time_frame, skip_first_date, skip_last_date, four_price_doji)
+            save_candles_to_file(symbol, time_frame, skip_first_date, skip_last_date, four_price_doji,
+                                 date_format=date_format, sep=sep, decimal=decimal)
 
 
 def save_candles_to_file(symbol='SBER', time_frame='M',
-                         skip_first_date=False, skip_last_date=False, four_price_doji=False):
+                         skip_first_date=False, skip_last_date=False, four_price_doji=False,
+                         date_format='%d.%m.%Y %H:%M', sep='\t', decimal="."):
     """Получение баров, объединение с имеющимися барами в файле (если есть), сохранение баров в файл
         :param int|str time_frame: Временной интервал в минутах (int) 1, 10, 60 или код ("D" - дни, "W" - недели, "M" - месяцы, "Q" - кварталы)
         :param bool skip_first_date: Убрать бары на первую полученную дату
         :param bool skip_last_date: Убрать бары на последнюю полученную дату
         :param bool four_price_doji: Оставить бары с дожи 4-х цен
+        :param str date_format: Формат поля даты для выгрузки в csv
+        :param str sep: Разделитель для выгрузки в csv
+        :param str decimal: Разделитель float для выгрузки в csv
     """
     tf = f'{time_frame}1' if time_frame in ('D', 'W', 'Q') else f'MN1' if time_frame == 'M' else f'M{time_frame}'  # Временной интервал для файла
     file_df = pd.DataFrame()  # Дальше будем пытаться получить бары из файла
@@ -41,7 +50,7 @@ def save_candles_to_file(symbol='SBER', time_frame='M',
     file_exists = os.path.isfile(file_name)  # Существует ли файл
     if file_exists:  # Если файл существует
         print(f'Получение файла {file_name}')
-        file_df = pd.read_csv(file_name, sep='\t', parse_dates=['datetime'], date_format='%d.%m.%Y %H:%M')  # Считываем файл в DataFrame
+        file_df = pd.read_csv(file_name, sep=sep, parse_dates=['datetime'], date_format=date_format, decimal=decimal)  # Считываем файл в DataFrame
         last_dt = file_df.iloc[-1]['datetime']  # Получать данные будем с последней полученной даты и времени из файла
         print(f'- Первая запись файла   : {file_df.iloc[0]["datetime"]}')
         print(f'- Последняя запись файла: {last_dt}')
@@ -84,34 +93,41 @@ def save_candles_to_file(symbol='SBER', time_frame='M',
         print('- Получены данные с', stats.iloc[0]['datetime'], 'по', last_stats_dt)
         file_df = pd.concat([file_df, stats]).drop_duplicates(keep='last')  # Добавляем новые данные в существующие. Удаляем дубликаты. Сбрасываем индекс
         file_df = file_df[['datetime', 'open', 'high', 'low', 'close', 'volume', 'value']]  # Отбираем нужные колонки. Дата и время будет экспортирована как индекс
-        file_df.set_index('datetime').to_csv(file_name, sep='\t', date_format='%d.%m.%Y %H:%M')  # На каждой итерации будем сохранять результат в файл
+        file_df.set_index('datetime').to_csv(file_name, sep=sep, date_format=date_format, decimal=decimal)  # На каждой итерации будем сохранять результат в файл
         last_dt = last_stats_dt  # Запоминаем последние полученные дату и время
         last_date = last_stats_date  # и дату
 
 
-def save_metrics_to_files(symbols=('SBER',), metrics=('tradestats', 'orderstats', 'obstats')):
+def save_metrics_to_files(symbols=('SBER',), metrics=('tradestats', 'orderstats', 'obstats'),
+                          date_format='%d.%m.%Y %H:%M', sep='\t', decimal="."):
     """Сохранение метрик тикеров в файлы
 
     :param tuple symbols: Коды тикеров в виде кортежа
     :param tuple metrics: Метрики. 'tradestats' - сделки, 'orderstats' - заявки, 'obstats' - стакан
+    :param str date_format: Формат поля даты для выгрузки в csv
+    :param str sep: Разделитель для выгрузки в csv
+    :param str decimal: Разделитель float для выгрузки в csv
     """
     for symbol in symbols:  # Пробегаемся по всем тикерам
         for metric in metrics:  # Пробегаемся по всем метрикам
-            save_metric_to_file(symbol, metric)  # Получаем метрику тикера, сохраняем в файл
+            save_metric_to_file(symbol, metric, date_format=date_format, sep=sep, decimal=decimal)  # Получаем метрику тикера, сохраняем в файл
 
 
-def save_metric_to_file(symbol='SBER', metric='tradestats'):
+def save_metric_to_file(symbol='SBER', metric='tradestats', date_format='%d.%m.%Y %H:%M', sep='\t', decimal="."):
     """Получение метрики тикера, сохранение в файл
 
     :param str symbol: Код тикера
     :param str metric: Метрика. 'tradestats' - сделки, 'orderstats' - заявки, 'obstats' - стакан
+    :param str date_format: Формат поля даты для выгрузки в csv
+    :param str sep: Разделитель для выгрузки в csv
+    :param str decimal: Разделитель float для выгрузки в csv
     """
     file_df = pd.DataFrame()  # Дальше будем пытаться получить бары из файла
     file_name = f'{datapath}{symbol}_{metric}.txt'
     file_exists = os.path.isfile(file_name)  # Существует ли файл
     if file_exists:  # Если файл существует
         print(f'Получение файла {file_name}')
-        file_df = pd.read_csv(file_name, sep='\t', parse_dates=['datetime'], date_format='%d.%m.%Y %H:%M')  # Считываем файл в DataFrame
+        file_df = pd.read_csv(file_name, sep=sep, parse_dates=['datetime'], date_format=date_format, decimal=decimal)  # Считываем файл в DataFrame
         last_dt = file_df.iloc[-1]['datetime']  # Получать данные будем с последней полученной даты и времени из файла
         print(f'- Первая запись файла   : {file_df.iloc[0]["datetime"]}')
         print(f'- Последняя запись файла: {last_dt}')
@@ -146,7 +162,7 @@ def save_metric_to_file(symbol='SBER', metric='tradestats'):
             break  # то выходим, дальше не продолжаем
         print('- Получены данные с', stats.iloc[0]['datetime'], 'по', last_stats_dt)
         file_df = pd.concat([file_df, stats]).drop_duplicates(keep='last')  # Добавляем новые данные в существующие. Удаляем дубликаты. Сбрасываем индекс
-        file_df.set_index('datetime').to_csv(file_name, sep='\t', date_format='%d.%m.%Y %H:%M')  # На каждой итерации будем сохранять результат в файл
+        file_df.set_index('datetime').to_csv(file_name, sep=sep, date_format=date_format, decimal=decimal)  # На каждой итерации будем сохранять результат в файл
         last_dt = last_stats_dt  # Запоминаем последние полученные дату и время
         last_date = last_stats_date  # и дату
 
