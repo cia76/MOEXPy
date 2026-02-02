@@ -175,7 +175,7 @@ class MOEXPy:
     # https://apim.moex.com/iss/analyticalproducts/futoi/securities.json - Futures Open Interest (FUTOI) по всем инструментам
 
     def get_all_futoi(self, date):
-        """Futures Open Interest (FUTOI) по инструменту
+        """Futures Open Interest (FUTOI) по всем инструментам
 
         :param date date: Дата торгов
         """
@@ -203,28 +203,46 @@ class MOEXPy:
         """Futures Open Interest (FUTOI) по инструменту
 
         :param str ticker: Тикер
-        :param datetime dt_from: Дата и время начала запроса
-        :param datetime dt_till: Дата и время окончания запроса
+        :param date dt_from: Дата и время начала запроса
+        :param date dt_till: Дата и время окончания запроса
         """
         url = f'{self.api_server}/analyticalproducts/futoi/securities/{ticker}.json'  # URL запроса
-        start = 0  # Начинаем получать данные с первой записи интервала
         all_data = None  # Накопленные данные
-        while True:  # Пока не обработаем все периоды запроса
+
+        days = (dt_till - dt_from).days  # Пагинация по торговым сессиям
+        for i in range(0, days + 1, 2):  # В каждом запросе, гарантированно, вмещаются 2 дня
             params = {
-                'from': dt_from,  # Дата и время начала запроса
-                'till': dt_till,  # Дата и время окончания запроса
-                'start': start   # Номер первой записи с начала интервала
+                'from': dt_till - timedelta(days=i+1),  # Дата и время начала запроса
+                'till': dt_till - timedelta(days=i),  # Дата и время окончания запроса
             }
             response = get(url, params=params, headers=self.headers)  # Отправляем запрос, получаем ответ
             content = loads(response.content.decode('utf-8'))  # Результат запроса в виде JSON
             data = content['futoi']['data']  # Пришедшие данные
-            if len(data) == 0:  # Если данных нет (достигнут конец выборки)
-                break  # то выходим
             if all_data is None:  # Если это первые пришедшие данные
                 all_data = content  # то сохраняем их полностью
-            else:  # Если данные уже есть
+            elif len(data) > 0:  # Если данные уже есть и пришли не пустые
                 all_data['futoi']['data'].extend(data)  # то добавляем к уже имеющимся
-            start += len(data)  # Номер первой записи перемещаем за последнюю полученную
+
+        # TODO Пагинация (параметр start) не работает у Московской Биржи
+        # start = 0  # Начинаем получать данные с первой записи интервала
+        # while True:  # Пока не обработаем все периоды запроса
+        #     params = {
+        #         'from': dt_from,  # Дата и время начала запроса
+        #         'till': dt_till,  # Дата и время окончания запроса
+        #         'start': start   # Номер первой записи с начала интервала
+        #     }
+        #     response = get(url, params=params, headers=self.headers)  # Отправляем запрос, получаем ответ
+        #     content = loads(response.content.decode('utf-8'))  # Результат запроса в виде JSON
+        #     data = content['futoi']['data']  # Пришедшие данные
+        #     if len(data) == 0:  # Если данных нет (достигнут конец выборки)
+        #         break  # то выходим
+        #     print(params, data[0], data[-1])
+        #     if all_data is None:  # Если это первые пришедшие данные
+        #         all_data = content  # то сохраняем их полностью
+        #     else:  # Если данные уже есть
+        #         all_data['futoi']['data'].extend(data)  # то добавляем к уже имеющимся
+        #     start += len(data)  # Номер первой записи перемещаем за последнюю полученную
+
         return all_data
 
     # Market Concentration (HI2) - https://moexalgo.github.io/docs/api/market-concentration-hi-2
