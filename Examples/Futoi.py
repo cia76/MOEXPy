@@ -1,7 +1,7 @@
 import logging  # Выводим лог на консоль и в файл
 from datetime import datetime, timedelta  # Дата и время
 
-from MOEXPy.MOEXPy.MOEXPy import MOEXPy  # Работа с Algopack API Московской Биржи
+from MOEXPy import MOEXPy  # Работа с Algopack API Московской Биржи
 
 
 if __name__ == '__main__':  # Точка входа при запуске этого скрипта
