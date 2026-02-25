@@ -1,29 +1,46 @@
 import logging  # Будем вести лог
 from datetime import datetime, timedelta
+from threading import Thread
+from uuid import uuid4
 from zoneinfo import ZoneInfo  # ВременнАя зона
 from json import loads  # Отправляем запросы и получаем ответы в формае JSON
 
 import keyring  # Безопасное хранение торгового токена
 from requests import get  # Запросы через HTTP API
+from websockets import Subprotocol  # Протокол STOMP
+from websockets.sync.client import connect  # Подключение к серверу WebSockets в синхронном режиме
+from stomp.utils import Frame, convert_frame, parse_frame
 
 
 class MOEXPy:
     """Работа с Algopack API Московской Биржи https://moexalgo.github.io/docs/api из Python"""
+    api_server = 'https://apim.moex.com/iss'  # Информационно-статистический сервер запросов (ISS) на Московской Бирже
+    ws_server = 'wss://iss.moex.com/infocx/v3/websocket'  # Информационно-статистический сервер распространения биржевой информации в реальном времени (ISS+) на Московской Бирже
     tz_msk = ZoneInfo('Europe/Moscow')  # Московская Биржа работает по московскому времени
     logger = logging.getLogger('MOEXPy')  # Будем вести лог
 
-    def __init__(self, token=None):
+    def __init__(self, token=None, login=None, passcode=None):
         """Инициализация
 
-        :param str token: Токен
+        :param str token: Токен (ISS)
+        :param str login: Логин (ISS+)
+        :param str passcode: Пароль (ISS+)
         """
-        self.api_server = 'https://apim.moex.com/iss'  # Информационно-статистический сервер запросов на Московской Бирже
-        if token is None:  # Если торговый токен не указан
+        if token is None:  # Если торговый токен не указан (запросы ISS)
             self.token = self.get_long_token_from_keyring('MOEXPy', 'token')  # то получаем его из защищенного хранилища по частям
         else:  # Если указан торговый токен
             self.token = token  # Торговый токен
             self.set_long_token_to_keyring('MOEXPy', 'token', self.token)  # Сохраняем его в защищенное хранилище
         self.headers = {'Accept': 'application/json', 'Authorization': f'Bearer {self.token}'}  # Заголовки для запросов
+        if login is None:  # Если логин не указан (подписки ISS+)
+            self.login = self.get_long_token_from_keyring('MOEXPy', 'login')  # то получаем его из защищенного хранилища по частям
+            self.passcode = self.get_long_token_from_keyring('MOEXPy', 'passcode')  # также получаем пароль из защищенного хранилища по частям
+        else:  # Если указан логин
+            self.login = login  # Логин
+            self.set_long_token_to_keyring('MOEXPy', 'login', self.login)  # Сохраняем его в защищенное хранилище
+            self.passcode = passcode  # Пароль
+            self.set_long_token_to_keyring('MOEXPy', 'passcode', self.passcode)  # Сохраняем его в защищенное хранилище
+        self.ws_socket = None  # Подключения к серверу WebSockets пока нет
 
     # Real-time market data - Акции - https://moexalgo.github.io/docs/api/real-time-market-data-акции
     # Real-time market data - Фьючерсы - https://moexalgo.github.io/docs/api/real-time-market-data-фьючерсы
@@ -273,6 +290,37 @@ class MOEXPy:
         self.logger.debug(f'Запрос : {response.request.path_url}')
         self.logger.debug(f'Ответ  : {content}')
         return loads(content)  # Декодируем JSON в справочник, возвращаем его. Ошибки также могут приходить в виде JSON
+
+    # Запросы WebSocket
+
+    def send_websocket(self, request, params):
+        """Отправка запроса через командный WebSocket
+
+        :param request: Запрос
+        :param params: Параметры запроса в виде словаря
+        """
+        if self.ws_socket is None:  # Если не было подключения к серверу WebSocket
+            self.ws_socket = connect(self.ws_server, subprotocols=[Subprotocol('STOMP')])  # то пробуем к нему подключиться по протоколу STOMP
+            connect_request_frame = Frame('CONNECT', headers=dict(domain='passport', login=self.login, passcode=self.passcode))  # Запрос на авторизацию
+            self.ws_socket.send(b''.join(convert_frame(connect_request_frame)))  # Отправляем
+            connect_response_frame = parse_frame(self.ws_socket.recv())  # Получаем ответ
+            if connect_response_frame.cmd != 'CONNECTED':  # Если не подключились
+                self.logger.error(f'Ошибка подключения к WebSocket: {connect_response_frame.cmd}')
+                self.ws_socket = None  # Подключения к серверу WebSocket нет
+                return  # Выходим, дальше не продолжаем
+            else:  # Если подключились
+                Thread(target=self.websocket_thread, name='WebSocketThread').start()  # Создаем и запускаем поток управления подписками
+        request_frame = Frame(request, params)  # Запрос с параметрами
+        self.ws_socket.send(b''.join(convert_frame(request_frame)))  # Отправляем
+
+    # Подписки WebSocket
+
+    def websocket_thread(self):
+        """Поток управления подписками"""
+        self.logger.debug(f'WebSocket Thread: Запущен')
+        while True:
+            response_frame = parse_frame(self.ws_socket.recv())  # Получаем ответ
+            
 
     # Функции конвертации
 
