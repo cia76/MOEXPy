@@ -1,7 +1,7 @@
 import logging  # Выводим лог на консоль и в файл
 from datetime import datetime  # Дата и время
 
-from MOEXPy.MOEXPy.MOEXPy import MOEXPy  # Работа с Algopack API Московской Биржи
+from MOEXPy import MOEXPy  # Работа с Algopack API Московской Биржи
 
 
 def on_new_bar(headers, body):  # Обработчик события прихода нового бара
@@ -33,7 +33,7 @@ if __name__ == '__main__':  # Точка входа при запуске это
 
     logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',  # Формат сообщения
                         datefmt='%d.%m.%Y %H:%M:%S',  # Формат даты
-                        level=logging.DEBUG,  # Уровень логируемых событий NOTSET/DEBUG/INFO/WARNING/ERROR/CRITICAL
+                        level=logging.INFO,  # Уровень логируемых событий NOTSET/DEBUG/INFO/WARNING/ERROR/CRITICAL
                         handlers=[logging.FileHandler('Connect.log', encoding='utf-8'),
                                   logging.StreamHandler()])  # Лог записываем в файл и выводим на консоль
     logging.Formatter.converter = lambda *args: datetime.now(
@@ -47,8 +47,12 @@ if __name__ == '__main__':  # Точка входа при запуске это
     # Проверяем работу запрос/ответ
     logger.info(f'Данные тикера {dataname}')  # МосБиржа не передает время на своих серверах. Поэтому, запросим данные тикера
     board, symbol = mp_provider.dataname_to_board_symbol(dataname)  # Код режима торгов и тикер из названия тикера
-    si = mp_provider.get_ticker(board, symbol)  # Получаем информацию о тикере (спецификация и рыночные данные)
-    logger.info(si)
+    si = mp_provider.get_ticker(board, symbol)  # Получаем информацию о тикере (спецификация и данные торгов)
+    security = dict(zip(si['securities']['columns'], si['securities']['data'][0]))  # Спецификация тикера в виде словаря
+    market_data = dict(zip(si['marketdata']['columns'], si['marketdata']['data'][0]))  # Текущие данные торгов тикера в виде словаря
+    logger.debug(si)
+    logger.info(security)
+    logger.info(market_data)
 
     # Проверяем работу подписок
     logger.info(f'Подписка на {tf} бары тикера {dataname}')
