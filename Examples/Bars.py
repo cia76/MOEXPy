@@ -17,9 +17,9 @@ if __name__ == '__main__':  # Точка входа при запуске это
     dataname = 'TQBR.SBER'  # Тикер
     tf = 'D1'  # Временной интервал
 
-    moex_market, symbol = mp_provider.dataname_to_moex_market_symbol(dataname)  # Код рынка Московской Биржи и тикер из названия тикера
+    board, symbol = mp_provider.dataname_to_board_symbol(dataname)  # Код рынка Московской Биржи и тикер из названия тикера
     moex_tf = mp_provider.timeframe_to_moex_timeframe(tf)  # Временной интервал Московской Биржи
-    bars = mp_provider.get_candles(moex_market, symbol, datetime(1990, 1, 1), datetime.now(), moex_tf)  # Получаем всю историю тикера
+    bars = mp_provider.get_candles(board, symbol, datetime(1990, 1, 1), datetime.now(), moex_tf)  # Получаем всю историю тикера
     col_bars = {col: idx for idx, col in enumerate(bars['candles']['columns'])}  # Колонки истории тикера с их порядковыми номерами
     data_bars = bars['candles']['data']  # Данные истории тикера
     if len(data_bars) == 0:  # Если бары не получены
