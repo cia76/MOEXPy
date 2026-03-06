@@ -1,21 +1,25 @@
+import json
 import logging  # Будем вести лог
 from datetime import datetime, timedelta
 from threading import Thread
-from uuid import uuid4
+from typing import Literal, Any
+from uuid import uuid4  # Уникальный идентификатор подписки
 from zoneinfo import ZoneInfo  # ВременнАя зона
-from json import loads  # Отправляем запросы и получаем ответы в формае JSON
+from json import loads  # Получаем ответы в формае JSON
 
 import keyring  # Безопасное хранение торгового токена
 from requests import get  # Запросы через HTTP API
 from websockets import Subprotocol  # Протокол STOMP
 from websockets.sync.client import connect  # Подключение к серверу WebSockets в синхронном режиме
-from stomp.utils import Frame, convert_frame, parse_frame
+from stomp.utils import Frame, convert_frame, parse_frame  # Работа с сервером WebSockets по протоколу STOMP
 
 
 class MOEXPy:
     """Работа с Algopack API Московской Биржи https://moexalgo.github.io/docs/api из Python"""
-    api_server = 'https://apim.moex.com/iss'  # Информационно-статистический сервер запросов (ISS) на Московской Бирже
+    iss_server = 'https://iss.moex.com/iss'  # Справочники МосБиржи (ISS)
     ws_server = 'wss://iss.moex.com/infocx/v3/websocket'  # Информационно-статистический сервер распространения биржевой информации в реальном времени (ISS+) на Московской Бирже
+    api_server = 'https://apim.moex.com/iss'  # Алгопак (ISS)
+    engine_map = dict(stocks='eq', futures='fo', currency='fx')  # Площадки Алгопака: Акции/фьючерсы/вылюта
     tz_msk = ZoneInfo('Europe/Moscow')  # Московская Биржа работает по московскому времени
     logger = logging.getLogger('MOEXPy')  # Будем вести лог
 
@@ -42,29 +46,49 @@ class MOEXPy:
             self.set_long_token_to_keyring('MOEXPy', 'passcode', self.passcode)  # Сохраняем его в защищенное хранилище
         self.ws_socket = None  # Подключения к серверу WebSockets пока нет
 
+        # События сервера WebSocket
+        self.on_connected = Event()  # Подключение
+        self.on_error = Event()  # Ошибка
+        self.on_receipt = Event()
+        self.on_message = Event()  # Сообщение (данные подписки)
+        self.on_reply = Event()
+        self.on_closed = Event()  # Отключение
+
+        # Справочники
+        dict_data = get(f'{self.iss_server}/index.json').json()  # Получаем и разбираем данные в формате JSON
+        engines_columns = dict_data['engines']['columns']  # Торговые площадки - Названия колонок
+        engines_data = dict_data['engines']['data']  # Торговые площадки - Данные
+        self.engines_dict = {row[engines_columns.index('id')]: {col: row[i] for i, col in enumerate(engines_columns) if col != 'id'} for row in engines_data}  # Справочник по ключу id
+        markets_columns = dict_data['markets']['columns']  # Рынки - Названия колонок
+        markets_data = dict_data['markets']['data']  # Рынки - Данные
+        self.markets_dict = {row[markets_columns.index('id')]: {col: row[i] for i, col in enumerate(markets_columns) if col != 'id'} for row in markets_data}  # Справочник по ключу id
+        boards_columns = dict_data['boards']['columns']  # Режимы торгов - Названия колонок
+        boards_data = dict_data['boards']['data']  # Режимы торгов - Данные
+        self.boards_dict = {row[boards_columns.index('boardid')]: {col: row[i] for i, col in enumerate(boards_columns) if col != 'boardid'} for row in boards_data}  # Справочник по ключу boardid
+
+        self.subscriptions = {}  # Справочник подписок
+
     # Real-time market data - Акции - https://moexalgo.github.io/docs/api/real-time-market-data-акции
     # Real-time market data - Фьючерсы - https://moexalgo.github.io/docs/api/real-time-market-data-фьючерсы
 
-    def get_all_tickers(self, market):
-        """Торговая статистика за сегодня по всем инструментам
+    def get_all_tickers(self, board):
+        """Торговая статистика за сегодня по всем инструментам режима торгов
 
-        param str market: Рынок. 'shares' - акции, 'futures' - фьючерсы
+        param str board: Режим торгов
         """
-        if market == 'shares':  # Если рынок акций
-            url = f'{self.api_server}/engines/stock/markets/shares/boards/tqbr/securities.json'  # URL запроса
-        elif market == 'futures':  # Если рынок фьючерсов
-            url = f'{self.api_server}/engines/futures/markets/forts/boards/rfud/securities.json'  # URL запроса
-        else:  # Если рынок неизвестен
-            self.logger.error(f'Неизвестный рынок {market}')
-            return None
+        market, _, engine = self.get_market_engine(board)  # По режиму торгов получаем рынок и торговую площадку
+        if market is None:  # Если рынок не пришел
+            return None  # то выходим, дальше не продолжаем
+        url = f'{self.iss_server}/engines/{engine}/markets/{market}/boards/{board}/securities.json'  # URL запроса
         start = 0  # Начинаем получать данные с первой записи интервала
         all_data = None  # Накопленные данные
         while True:  # Пока не обработаем все периоды запроса
             params = {
                 'start': start   # Номер первой записи с начала интервала
             }
-            response = get(url, params=params, headers=self.headers)  # Отправляем запрос, получаем ответ
-            content = loads(response.content.decode('utf-8'))  # Результат запроса в виде JSON
+            content = self.check_result(get(url, params=params, headers=self.headers))  # Отправляем запрос, получаем ответ
+            if content is None:  # Если ответ не пришел
+                return None  # то выходим, дальше не продолжаем
             data = content['securities']['data']  # Пришедшие данные
             if len(data) == 0:  # Если данных нет (достигнут конец выборки)
                 break  # то выходим
@@ -75,38 +99,31 @@ class MOEXPy:
             start += len(data)  # Номер первой записи перемещаем за последнюю полученную
         return all_data
 
-    def get_ticker(self, market, ticker):
+    def get_ticker(self, board, ticker):
         """Торговая статистика за сегодня по инструменту
 
-        param str market: Рынок. 'shares' - акции, 'futures' - фьючерсы
+        param str board: Режим торгов
         param str ticker: Тикер
         """
-        if market == 'shares':  # Если рынок акций
-            url = f'{self.api_server}/engines/stock/markets/shares/boards/tqbr/securities/{ticker}.json'  # URL запроса
-        elif market == 'futures':  # Если рынок фьючерсов
-            url = f'{self.api_server}/engines/futures/markets/forts/boards/rfud/securities/{ticker}.json'  # URL запроса
-        else:  # Если рынок неизвестен
-            self.logger.error(f'Неизвестный рынок {market}')
-            return None
-        response = get(url, headers=self.headers)  # Отправляем запрос, получаем ответ
-        return loads(response.content.decode('utf-8'))  # Результат запроса в виде JSON
+        market, _, engine = self.get_market_engine(board)  # По режиму торгов получаем рынок и торговую площадку
+        if market is None:  # Если рынок не пришел
+            return None  # то выходим, дальше не продолжаем
+        url = f'{self.iss_server}/engines/{engine}/markets/{market}/boards/{board}/securities/{ticker}.json'  # URL запроса
+        return self.check_result(get(url, headers=self.headers))
 
-    def get_candles(self, market, ticker, dt_from, dt_till, interval):
+    def get_candles(self, board, ticker, dt_from, dt_till, interval):
         """Свечи по инструменту
 
-        param str market: Рынок. 'shares' - акции, 'futures' - фьючерсы
+        param str board: Режим торгов
         param str ticker: Тикер
         param datetime dt_from: Дата и время начала запроса
         param datetime dt_till: Дата и время окончания запроса
         param int interval: Временной интервал. 1 - 'M1', 10 - 'M10', 60 - 'M60', 24 - 'D1', 7 - 'W1', 31 - 'MN1', 4 - 'MN3'
         """
-        if market == 'shares':  # Если рынок акций
-            url = f'{self.api_server}/engines/stock/markets/shares/boards/tqbr/securities/{ticker}/candles.json'  # URL запроса
-        elif market == 'futures':  # Если рынок фьючерсов
-            url = f'{self.api_server}/engines/futures/markets/forts/boards/rfud/securities/{ticker}/candles.json'  # URL запроса
-        else:  # Если рынок неизвестен
-            self.logger.error(f'Неизвестный рынок {market}')
-            return None
+        market, _, engine = self.get_market_engine(board)  # По режиму торгов получаем рынок и торговую площадку
+        if market is None:  # Если рынок не пришел
+            return None  # то выходим, дальше не продолжаем
+        url = f'{self.iss_server}/engines/{engine}/markets/{market}/boards/{board}/securities/{ticker}/candles.json'  # URL запроса
         all_data = None  # Накопленные данные
         while dt_from < dt_till:  # Пока не обработаем все периоды запроса
             params = {
@@ -114,8 +131,9 @@ class MOEXPy:
                 'till': dt_till,  # Дата и время окончания запроса
                 'interval': interval  # Временной интервал
             }
-            response = get(url, params=params, headers=self.headers)  # Отправляем запрос, получаем ответ
-            content = loads(response.content.decode('utf-8'))  # Результат запроса в виде JSON
+            content = self.check_result(get(url, params=params, headers=self.headers))  # Отправляем запрос, получаем ответ
+            if content is None:  # Если ответ не пришел
+                return None  # то выходим, дальше не продолжаем
             data = content['candles']['data']  # Пришедшие данные
             if len(data) == 0:  # Если данных нет (достигнут конец выборки)
                 break  # то выходим
@@ -126,70 +144,81 @@ class MOEXPy:
             dt_from = datetime.strptime(data[-1][-2], '%Y-%m-%d %H:%M:%S') + timedelta(minutes=1)  # Дата и время начала следующего периода
         return all_data
 
-    def get_orderbook(self, market, ticker):
+    def get_orderbook(self, board, ticker):
         """Стакан котировок по инструменту
 
-        param str market: Рынок. 'shares' - акции, 'futures' - фьючерсы
+        param str board: Режим торгов
         param str ticker: Тикер
         """
-        if market == 'shares':  # Если рынок акций
-            url = f'{self.api_server}/engines/stock/markets/shares/boards/tqbr/securities/{ticker}/orderbook.json'  # URL запроса
-        elif market == 'futures':  # Если рынок фьючерсов
-            url = f'{self.api_server}/engines/futures/markets/forts/boards/rfud/securities/{ticker}/orderbook.json'  # URL запроса
-        else:  # Если рынок неизвестен
-            self.logger.error(f'Неизвестный рынок {market}')
-            return None
-        response = get(url, headers=self.headers)  # Отправляем запрос, получаем ответ
-        return loads(response.content.decode('utf-8'))  # Результат запроса в виде JSON
+        market, _, engine = self.get_market_engine(board)  # По режиму торгов получаем рынок и торговую площадку
+        if market is None:  # Если рынок не пришел
+            return None  # то выходим, дальше не продолжаем
+        url = f'{self.iss_server}/engines/{engine}/markets/{market}/boards/{board}/securities/{ticker}/orderbook.json'  # URL запроса
+        return self.check_result(get(url, headers=self.headers))
 
-    def get_trades(self, market, ticker, tradeno=None):
+    def get_trades(self, board, ticker, tradeno=None):
         """Все сделки по инструменту
 
-        param str market: Рынок. 'shares' - акции, 'futures' - фьючерсы
+        param str board: Режим торгов
         param str ticker: Тикер
         param int tradeno: Получить сделки, которые идут начиная с указанного номера
         """
-        if market == 'shares':  # Если рынок акций
-            url = f'{self.api_server}/engines/stock/markets/shares/boards/tqbr/securities/{ticker}/trades.json'  # URL запроса
-        elif market == 'futures':  # Если рынок фьючерсов
-            url = f'{self.api_server}/engines/futures/markets/forts/boards/rfud/securities/{ticker}/trades.json'  # URL запроса
-        else:  # Если рынок неизвестен
-            self.logger.error(f'Неизвестный рынок {market}')
+        market, _, engine = self.get_market_engine(board)  # По режиму торгов получаем рынок и торговую площадку
+        if market is None:  # Если рынок не пришел
             return None
-        params = {}  # Параметров нет
-        if tradeno is not None:  # Но если указан номер сделки
-            params = {
-                'tradeno': tradeno  # То будем получать сделки начиная с указанного номера
-            }
-        response = get(url, params=params, headers=self.headers)  # Отправляем запрос, получаем ответ
-        return loads(response.content.decode('utf-8'))  # Результат запроса в виде JSON
+        url = f'{self.iss_server}/engines/{engine}/markets/{market}/boards/{board}/securities/{ticker}/trades.json'  # URL запроса
+        params = {} if tradeno is None else dict(tradeno=tradeno)  # Если указан номер сделки, то будем получать сделки начиная с указанного номера
+        return self.check_result(get(url, params=params, headers=self.headers))
 
     # Super Candles - Акции - https://moexalgo.github.io/docs/api/super-candles-акции
     # Super Candles - Фьючерсы - https://moexalgo.github.io/docs/api/super-candles-фьючерсы
     # Super Candles - Валюта - https://moexalgo.github.io/docs/api/super-candles-валюта
 
-    # https://apim.moex.com/iss/datashop/algopack/eq/tradestats.json - Метрики рассчитанные на основе потока сделок (tradestats) по всем инструментам
-    # https://apim.moex.com/iss/datashop/algopack/eq/tradestats/:ticker.json - Метрики рассчитанные на основе потока сделок (tradestats) по инструменту
-    # https://apim.moex.com/iss/datashop/algopack/eq/obstats.json - Метрики рассчитанные на основе стакана котировок (obstats) по всем инструментам
-    # https://apim.moex.com/iss/datashop/algopack/eq/obstats/:ticker.json - Метрики рассчитанные на основе стакана котировок (obstats) по инструменту
-    # https://apim.moex.com/iss/datashop/algopack/eq/orderstats.json - Метрики рассчитанные на основе потока заявок (orderstats) по всем инструментам
-    # https://apim.moex.com/iss/datashop/algopack/eq/orderstats/:ticker.json - Метрики рассчитанные на основе потока заявок (orderstats) по инструменту
+    def get_all_stats(self, stats: Literal['trade', 'ob', 'order'], engine: Literal['stock', 'futures', 'currency'], date, latest=False, limit=1000):
+        """Метрики рассчитанные на основе потока сделок/котировок/заявок по всем инструментам
 
-    # https://apim.moex.com/iss/datashop/algopack/fo/tradestats.json - Метрики рассчитанные на основе потока сделок (tradestats) по всем инструментам
-    # https://apim.moex.com/iss/datashop/algopack/fo/tradestats/:ticker.json - Метрики рассчитанные на основе потока сделок (tradestats) по инструменту
-    # https://apim.moex.com/iss/datashop/algopack/fo/obstats.json - Метрики рассчитанные на основе стакана котировок (obstats) по всем инструментам
-    # https://apim.moex.com/iss/datashop/algopack/fo/obstats/:ticker.json - Метрики рассчитанные на основе стакана котировок (obstats) по инструменту
+        :param Literal['trade', 'ob', 'order'] stats: Поток сделок/котировок/заявок
+        :param Literal['stock', 'futures', 'currency'] engine: Торговая площадка акций/фьючерсов/валют
+        :param date date: Дата торгов
+        :param bool latest: Последняя пятиминутка
+        :param int limit: Кол-во записей (не более 1000)
+        """
+        url = f'{self.api_server}/datashop/algopack/{self.engine_map[engine]}/{stats}stats.json'  # URL запроса
+        params = dict(date=date, latest=latest, limit=limit)
+        return self.check_result(get(url, params=params, headers=self.headers))
 
-    # https://apim.moex.com/iss/datashop/algopack/fx/tradestats.json - Метрики рассчитанные на основе потока сделок (tradestats) по всем инструментам
-    # https://apim.moex.com/iss/datashop/algopack/fx/tradestats/:ticker.json - Метрики рассчитанные на основе потока сделок (tradestats) по инструменту
-    # https://apim.moex.com/iss/datashop/algopack/fx/obstats.json - Метрики рассчитанные на основе стакана котировок (obstats) по всем инструментам
-    # https://apim.moex.com/iss/datashop/algopack/fx/obstats/:ticker.json - Метрики рассчитанные на основе стакана котировок (obstats) по инструменту
-    # https://apim.moex.com/iss/datashop/algopack/fx/orderstats.json - Метрики рассчитанные на основе потока заявок (orderstats) по всем инструментам
-    # https://apim.moex.com/iss/datashop/algopack/fx/orderstats/:ticker.json - Метрики рассчитанные на основе потока заявок (orderstats) по инструменту
+    def get_stats(self, stats: Literal['trade', 'ob', 'order'], engine: Literal['stock', 'futures', 'currency'], ticker, dt_from, dt_till, latest=False):
+        """Метрики рассчитанные на основе потока сделок/котировок/заявок по инструменту
+
+        :param Literal['trade', 'ob', 'order'] stats: Поток сделок/котировок/заявок
+        :param Literal['stock', 'futures', 'currency'] engine: Торговая площадка акций/фьючерсов/валют
+        :param str ticker: Тикер
+        :param date dt_from: Дата и время начала запроса
+        :param date dt_till: Дата и время окончания запроса
+        :param bool latest: Последняя пятиминутка
+        """
+        url = f'{self.api_server}/datashop/algopack/{self.engine_map[engine]}/{stats}stats/{ticker}.json'  # URL запроса
+        all_data = None  # Накопленные данные
+        while dt_from < dt_till:  # Пока не обработаем все периоды запроса
+            params = {
+                'from': dt_from,  # Дата и время начала запроса
+                'till': dt_till,  # Дата и время окончания запроса
+                'latest': latest  # Последняя пятиминутка
+            }
+            content = self.check_result(get(url, params=params, headers=self.headers))  # Отправляем запрос, получаем ответ
+            if content is None:  # Если ответ не пришел
+                return None  # то выходим, дальше не продолжаем
+            data = content['candles']['data']  # Пришедшие данные
+            if len(data) == 0:  # Если данных нет (достигнут конец выборки)
+                break  # то выходим
+            if all_data is None:  # Если это первые пришедшие данные
+                all_data = content  # то сохраняем их полностью
+            else:  # Если данные уже есть
+                all_data['candles']['data'].extend(data)  # то добавляем к уже имеющимся
+            dt_from = datetime.strptime(data[-1][-2], '%Y-%m-%d %H:%M:%S') + timedelta(minutes=1)  # Дата и время начала следующего периода
+        return all_data
 
     # Futures Open Interest (FUTOI) - https://moexalgo.github.io/docs/api/futures-open-interest-futoi
-
-    # https://apim.moex.com/iss/analyticalproducts/futoi/securities.json - Futures Open Interest (FUTOI) по всем инструментам
 
     def get_all_futoi(self, date):
         """Futures Open Interest (FUTOI) по всем инструментам
@@ -204,8 +233,7 @@ class MOEXPy:
                 'date': date,  # Дата торгов
                 'start': start   # Номер первой записи с начала интервала
             }
-            response = get(url, params=params, headers=self.headers)  # Отправляем запрос, получаем ответ
-            content = loads(response.content.decode('utf-8'))  # Результат запроса в виде JSON
+            content = self.check_result(get(url, params=params, headers=self.headers))
             data = content['futoi']['data']  # Пришедшие данные
             if len(data) == 0:  # Если данных нет (достигнут конец выборки)
                 break  # то выходим
@@ -225,7 +253,6 @@ class MOEXPy:
         """
         url = f'{self.api_server}/analyticalproducts/futoi/securities/{ticker}.json'  # URL запроса
         all_data = None  # Накопленные данные
-
         days = (dt_till - dt_from).days  # Пагинация по торговым сессиям
         for i in range(0, days + 1, 2):  # В каждом запросе, гарантированно, вмещаются 2 дня
             params = {
@@ -239,38 +266,53 @@ class MOEXPy:
                 all_data = content  # то сохраняем их полностью
             elif len(data) > 0:  # Если данные уже есть и пришли не пустые
                 all_data['futoi']['data'].extend(data)  # то добавляем к уже имеющимся
-
-        # TODO Пагинация (параметр start) не работает у Московской Биржи
-        # start = 0  # Начинаем получать данные с первой записи интервала
-        # while True:  # Пока не обработаем все периоды запроса
-        #     params = {
-        #         'from': dt_from,  # Дата и время начала запроса
-        #         'till': dt_till,  # Дата и время окончания запроса
-        #         'start': start   # Номер первой записи с начала интервала
-        #     }
-        #     response = get(url, params=params, headers=self.headers)  # Отправляем запрос, получаем ответ
-        #     content = loads(response.content.decode('utf-8'))  # Результат запроса в виде JSON
-        #     data = content['futoi']['data']  # Пришедшие данные
-        #     if len(data) == 0:  # Если данных нет (достигнут конец выборки)
-        #         break  # то выходим
-        #     print(params, data[0], data[-1])
-        #     if all_data is None:  # Если это первые пришедшие данные
-        #         all_data = content  # то сохраняем их полностью
-        #     else:  # Если данные уже есть
-        #         all_data['futoi']['data'].extend(data)  # то добавляем к уже имеющимся
-        #     start += len(data)  # Номер первой записи перемещаем за последнюю полученную
-
         return all_data
 
     # Market Concentration (HI2) - https://moexalgo.github.io/docs/api/market-concentration-hi-2
 
-    # https://apim.moex.com/iss/datashop/algopack/:market/hi2.json - Индекс рыночной концентрации по всем инструментам
-    # https://apim.moex.com/iss/datashop/algopack/:market/hi2/:ticker.json - Индекс рыночной концентрации по инструменту
+    def get_all_hi2(self, engine: Literal['stock', 'futures', 'currency'], date):
+        """Индекс рыночной концентрации (Херфиндаля-Хиршмана) по всем инструментам
+
+        :param Literal['stock', 'futures', 'currency'] engine: Торговая площадка акций/фьючерсов/валют
+        :param date date: Дата торгов
+        """
+        url = f'{self.api_server}/datashop/algopack/{self.engine_map[engine]}/hi2.json'  # URL запроса
+        params = dict(date=date)
+        return self.check_result(get(url, params=params, headers=self.headers))
+
+    def get_hi2(self, engine: Literal['stock', 'futures', 'currency'], ticker, date):
+        """Индекс рыночной концентрации (Херфиндаля-Хиршмана) по инструменту
+
+        :param Literal['stock', 'futures', 'currency'] engine: Торговая площадка акций/фьючерсов/валют
+        :param str ticker: Тикер
+        :param date date: Дата торгов
+        """
+        url = f'{self.api_server}/datashop/algopack/{self.engine_map[engine]}/hi2/{ticker}.json'  # URL запроса
+        params = dict(date=date)
+        return self.check_result(get(url, params=params, headers=self.headers))
 
     # Mega Alerts - https://moexalgo.github.io/docs/api/mega-alerts
 
-    # https://apim.moex.com/iss/datashop/algopack/:market/alerts.json - Торговые аномалии по всем инструментам
-    # https://apim.moex.com/iss/datashop/algopack/:market/alerts/:ticker.json - Торговые аномалии по инструменту
+    def get_all_alerts(self, engine: Literal['stock', 'futures'], date):
+        """Торговые аномалии по всем инструментам
+
+        :param Literal['stock', 'futures'] engine: Торговая площадка акций/фьючерсов
+        :param date date: Дата торгов
+        """
+        url = f'{self.api_server}/datashop/algopack/{self.engine_map[engine]}/alerts.json'  # URL запроса
+        params = dict(date=date)
+        return self.check_result(get(url, params=params, headers=self.headers))
+
+    def get_alerts(self, engine: Literal['stock', 'futures'], ticker, date):
+        """Торговые аномалии по всем инструменту
+
+        :param Literal['stock', 'futures'] engine: Торговая площадка акций/фьючерсов
+        :param str ticker: Тикер
+        :param date date: Дата торгов
+        """
+        url = f'{self.api_server}/datashop/algopack/{self.engine_map[engine]}/alerts/{ticker}.json'  # URL запроса
+        params = dict(date=date)
+        return self.check_result(get(url, params=params, headers=self.headers))
 
     # Запросы REST
 
@@ -293,24 +335,29 @@ class MOEXPy:
 
     # Запросы WebSocket
 
-    def send_websocket(self, request, params):
+    def send_websocket(self, cmd: Literal['CONNECT', 'DISCONNECT', 'SUBSCRIBE', 'UNSUBSCRIBE', 'REQUEST', 'SEND'], params):
         """Отправка запроса через командный WebSocket
 
-        :param request: Запрос
-        :param params: Параметры запроса в виде словаря
+        :param Literal['CONNECT', 'DISCONNECT', 'SUBSCRIBE', 'UNSUBSCRIBE', 'REQUEST', 'SEND'] cmd: Клиентские команды
+        :param dict params: Параметры запроса в виде словаря
         """
         if self.ws_socket is None:  # Если не было подключения к серверу WebSocket
             self.ws_socket = connect(self.ws_server, subprotocols=[Subprotocol('STOMP')])  # то пробуем к нему подключиться по протоколу STOMP
-            connect_request_frame = Frame('CONNECT', headers=dict(domain='passport', login=self.login, passcode=self.passcode))  # Запрос на авторизацию
+            connect_request_frame = Frame(cmd='CONNECT', headers=dict(domain='passport', login=self.login, passcode=self.passcode))  # Запрос на авторизацию
             self.ws_socket.send(b''.join(convert_frame(connect_request_frame)))  # Отправляем
-            connect_response_frame = parse_frame(self.ws_socket.recv())  # Получаем ответ
+            connect_response_frame = parse_frame(self.ws_socket.recv())  # Ожидаем и получаем ответ
             if connect_response_frame.cmd != 'CONNECTED':  # Если не подключились
                 self.logger.error(f'Ошибка подключения к WebSocket: {connect_response_frame.cmd}')
                 self.ws_socket = None  # Подключения к серверу WebSocket нет
                 return  # Выходим, дальше не продолжаем
             else:  # Если подключились
-                Thread(target=self.websocket_thread, name='WebSocketThread').start()  # Создаем и запускаем поток управления подписками
-        request_frame = Frame(request, params)  # Запрос с параметрами
+                Thread(target=self.websocket_thread, name='WebSocketThread', daemon=True).start()  # Создаем и запускаем поток управления подписками. Завершится с окончанием основного потока
+        if cmd == 'SUBSCRIBE':  # Если подписываемся
+            subscription_id = str(uuid4())  # то генерируем уникальный номер подписки
+            self.subscriptions[subscription_id] = params  # Заносим в список подписок
+            params['id'] = subscription_id  # Также передаем в параметры
+        request_frame = Frame(cmd=cmd, headers=params)  # Клиентская команда с параметрами
+        self.logger.debug(f'Отправлены данные WebSocket {request_frame.cmd} - {request_frame.body} - {request_frame.headers}')
         self.ws_socket.send(b''.join(convert_frame(request_frame)))  # Отправляем
 
     # Подписки WebSocket
@@ -319,27 +366,56 @@ class MOEXPy:
         """Поток управления подписками"""
         self.logger.debug(f'WebSocket Thread: Запущен')
         while True:
-            response_frame = parse_frame(self.ws_socket.recv())  # Получаем ответ
-            
+            response_frame = parse_frame(self.ws_socket.recv())  # Получаем ответ или таймаут
+            cmd = response_frame.cmd  # Полученная команда
+            headers = response_frame.headers  # Заголовки команды
+            body = json.loads(response_frame.body.decode('utf8').strip('\0'))  # Расшифровываем пришедшее сообщение
+            self.logger.debug(f'Пришли данные WebSocket {cmd} - {headers} - {body}')
+            if cmd == 'CONNECTED':  # Подключение
+                self.on_connected.trigger(headers, body)
+            elif cmd == 'ERROR':  # Ошибка
+                self.on_error.trigger(headers, body)
+            elif cmd == 'RECEIPT':
+                self.on_receipt.trigger(headers, body)
+            elif cmd == 'MESSAGE':  # Сообщение (данные подписки)
+                subscription_id = headers.get('subscription')  # Пытаемся получить уникальный номер подписки
+                if subscription_id is not None:  # Если пришло сообщение по подписке
+                    headers.update(self.subscriptions[subscription_id])  # то в заголовок добавляем данные подписки
+                self.on_message.trigger(headers, body)
+            elif cmd == 'REPLY':
+                self.on_reply.trigger(headers, body)
+            elif cmd == 'CLOSED':  # Отключение
+                self.on_closed.trigger(headers, body)
 
     # Функции конвертации
 
     @staticmethod
-    def dataname_to_moex_market_symbol(dataname) -> tuple[str | None, str]:
+    def dataname_to_board_symbol(dataname) -> tuple[str | None, str]:
         """Код рынка Московской Биржи и тикер из названия тикера
 
         :param str dataname: Название тикера
-        :return: Код рынка Московской Биржи и тикер
+        :return: Код режима торгов и тикер
         """
-        market_map = {'TQBR': 'shares', 'SPBFUT': 'futures', 'CETS': 'fx'}  # TODO Дополнить всеми <режимами торгов>: <рынками>
         symbol_parts = dataname.split('.')  # По разделителю пытаемся разбить тикер на части
         if len(symbol_parts) >= 2:  # Если тикер задан в формате <Код режима торгов>.<Код тикера>
             board = symbol_parts[0]  # Код режима торгов
             symbol = '.'.join(symbol_parts[1:])  # Код тикера
         else:  # Если тикер задан без кода режима торгов
             return None, dataname  # то код рынка неизвестен
-        moex_market = market_map.get(board)  # Пытаемся получить код рынка Московской Биржи
-        return moex_market, symbol
+        return board, symbol
+
+    def get_market_engine(self, board: str) -> tuple[str | None, str | None, str | None]:
+        """Рынок и торговая площадка из режима торгов
+
+        :param str board: Режим торгов
+        :return: Рынок, торговая площадка
+        """
+        board_row = self.boards_dict.get(board)  # Строка режима торгов
+        if board_row is None:  # Если не найдена
+            self.logger.error(f'Неизвестный рынок и торговая площадка для режима торгов {board}')
+            return None, None, None  # то и рынки с торговыми площадками найти не удастся. Выходим, дальше не продолжаем
+        market_row = self.markets_dict.get(board_row['market_id'])  # Строка рынка (должна быть)
+        return market_row['market_name'], market_row['marketplace'], market_row['trade_engine_name']  # Например: shares, MXSE, stock
 
     @staticmethod
     def timeframe_to_moex_timeframe(tf: str) -> int:
@@ -411,3 +487,22 @@ class MOEXPy:
                 index += 1  # Переходим к следующей части токена
         except keyring.errors.KeyringError as e:
             self.logger.fatal(f'Ошибка доступа к системному хранилищу: {e}')
+
+
+class Event:
+    """Событие с подпиской / отменой подписки"""
+    def __init__(self):
+        self._callbacks: set[Any] = set()  # Избегаем дубликатов функций при помощи set
+
+    def subscribe(self, callback) -> None:
+        """Подписаться на событие"""
+        self._callbacks.add(callback)  # Добавляем функцию в список
+
+    def unsubscribe(self, callback) -> None:
+        """Отписаться от события"""
+        self._callbacks.discard(callback)  # Удаляем функцию из списка. Если функции нет в списке, то не будет ошибки
+
+    def trigger(self, *args, **kwargs) -> None:
+        """Вызвать событие"""
+        for callback in list(self._callbacks):  # Пробегаемся по копии списка, чтобы избежать исключения при удалении
+            callback(*args, **kwargs)  # Вызываем функцию
