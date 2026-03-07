@@ -391,7 +391,7 @@ class MOEXPy:
 
     @staticmethod
     def dataname_to_board_symbol(dataname) -> tuple[str | None, str]:
-        """Код рынка Московской Биржи и тикер из названия тикера
+        """Код режима торгов и тикер из названия тикера
 
         :param str dataname: Название тикера
         :return: Код режима торгов и тикер
@@ -403,6 +403,16 @@ class MOEXPy:
         else:  # Если тикер задан без кода режима торгов
             return None, dataname  # то код рынка неизвестен
         return board, symbol
+
+    @staticmethod
+    def board_symbol_to_dataname(board, symbol) -> str:
+        """Название тикера из кода режима торгов и тикера
+
+        :param str board: Код режима торгов
+        :param str symbol: Тикер
+        :return: Название тикера
+        """
+        return f'{board}.{symbol}'
 
     def get_market_engine(self, board: str) -> tuple[str | None, str | None, str | None]:
         """Рынок и торговая площадка из режима торгов
