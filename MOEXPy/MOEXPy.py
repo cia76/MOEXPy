@@ -419,7 +419,7 @@ class MOEXPy:
 
     @staticmethod
     def timeframe_to_moex_timeframe(tf: str) -> int:
-        """Перевод временнОго интервала во временной интервал Московской Биржи
+        """Перевод временнОго интервала во временной интервал Московской Биржи (REST)
 
         :param str tf: Временной интервал https://ru.wikipedia.org/wiki/Таймфрейм
         :return: Временной интервал Московской Биржи
@@ -430,15 +430,39 @@ class MOEXPy:
         raise NotImplementedError(f'Временной интервал {tf} не поддерживается')  # С остальными временнЫми интервалами не работаем
 
     @staticmethod
-    def moex_timeframe_to_timeframe(moex_tf) -> str:
-        """Перевод временнОго интервала Московской Биржи во временной интервал
+    def timeframe_to_moex_ws_timeframe(tf: str) -> str:
+        """Перевод временнОго интервала во временной интервал Московской Биржи (WebSockets)
 
-        :param int moex_tf: Временной интервал Московской Биржи
+        :param str tf: Временной интервал https://ru.wikipedia.org/wiki/Таймфрейм
+        :return: Временной интервал Московской Биржи (WebSockets)
+        """
+        tf_map = {'M1': 'M1', 'M10': 'M10', 'M60': 'H1', 'D1': 'D1', 'W1': 'W1', 'MN1': 'm1', 'MN3': 'Q1'}  # Справочник временнЫх интервалов
+        if tf in tf_map:  # Если временной интервал есть в справочнике
+            return tf_map[tf]  # то возвращаем временной интервал Финама
+        raise NotImplementedError(f'Временной интервал {tf} не поддерживается')  # С остальными временнЫми интервалами не работаем
+
+    @staticmethod
+    def moex_timeframe_to_timeframe(moex_tf) -> str:
+        """Перевод временнОго интервала Московской Биржи (REST) во временной интервал
+
+        :param int moex_tf: Временной интервал Московской Биржи (REST)
         :return: Временной интервал https://ru.wikipedia.org/wiki/Таймфрейм
         """
-        finam_tf_map = {1: 'M1', 10: 'M10', 60: 'M60', 24: 'D1', 7: 'W1', 31: 'MN1', 4: 'MN3'}  # Справочник временнЫх интервалов Московской Биржи
-        if moex_tf in finam_tf_map:  # Если временной интервал Московской Биржи есть в справочнике
-            return finam_tf_map[moex_tf]  # то возвращаем временной интервал
+        tf_map = {1: 'M1', 10: 'M10', 60: 'M60', 24: 'D1', 7: 'W1', 31: 'MN1', 4: 'MN3'}  # Справочник временнЫх интервалов Московской Биржи
+        if moex_tf in tf_map:  # Если временной интервал Московской Биржи есть в справочнике
+            return tf_map[moex_tf]  # то возвращаем временной интервал
+        raise NotImplementedError(f'Временной интервал Московской Биржи {moex_tf} не поддерживается')  # С остальными временнЫми интервалами Московской Биржи не работаем
+
+    @staticmethod
+    def moex_ws_timeframe_to_timeframe(moex_tf) -> str:
+        """Перевод временнОго интервала Московской Биржи (WebSockets) во временной интервал
+
+        :param str moex_tf: Временной интервал Московской Биржи (WebSockets)
+        :return: Временной интервал https://ru.wikipedia.org/wiki/Таймфрейм
+        """
+        tf_map = {'M1': 'M1', 'M10': 'M10', 'H1': 'M60', 'D1': 'D1', 'W1': 'W1', 'm1': 'MN1', 'Q1': 'MN3'}  # Справочник временнЫх интервалов Московской Биржи
+        if moex_tf in tf_map:  # Если временной интервал Московской Биржи есть в справочнике
+            return tf_map[moex_tf]  # то возвращаем временной интервал
         raise NotImplementedError(f'Временной интервал Московской Биржи {moex_tf} не поддерживается')  # С остальными временнЫми интервалами Московской Биржи не работаем
 
     def get_long_token_from_keyring(self, service: str, username: str) -> str | None:
