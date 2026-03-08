@@ -356,6 +356,8 @@ class MOEXPy:
             subscription_id = str(uuid4())  # то генерируем уникальный номер подписки
             self.subscriptions[subscription_id] = params  # Заносим в список подписок
             params['id'] = subscription_id  # Также передаем в параметры
+        elif cmd == 'UNSUBSCRIBE':
+            del self.subscriptions[params['id']]  # Удаляем подписку из списка
         request_frame = Frame(cmd=cmd, headers=params)  # Клиентская команда с параметрами
         self.logger.debug(f'Отправлены данные WebSocket {request_frame.cmd} - {request_frame.body} - {request_frame.headers}')
         self.ws_socket.send(b''.join(convert_frame(request_frame)))  # Отправляем
