@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(name='MOEXPy',
-      version='2016.03.04',  # Внутренняя версия формата <Год>.<Месяц>.<Номер>
+      version='2016.03.05',  # Внутренняя версия формата <Год>.<Месяц>.<Номер>
       author='Чечет Игорь Александрович',
       description='Библиотека-обертка, которая позволяет работать с Algopack API Московской Биржи из Python',
       url='https://github.com/cia76/MOEXPy',
