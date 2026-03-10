@@ -489,7 +489,7 @@ class MOEXPy:
                 token_parts.append(token_part)  # Добавляем часть токена
                 index += 1  # Переходим к следующей части токена
             if not token_parts:  # Если токен не найден
-                self.logger.error(f'Токен не найден в системном хранилище. Вызовите fp_provider = FinamPy("<Токен>")')
+                self.logger.error(f'Токен не найден в системном хранилище. Вызовите mp_provider = MOEXPy("<Токен>")')
                 return None
             token = ''.join(token_parts)  # Собираем токен из частей
             self.logger.debug('Токен успешно загружен из системного хранилища')
