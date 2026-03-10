@@ -261,8 +261,9 @@ class MOEXPy:
             }
             response = get(url, params=params, headers=self.headers)  # Отправляем запрос, получаем ответ
             content = loads(response.content.decode('utf-8'))  # Результат запроса в виде JSON
-            data = content['futoi']['data']  # Пришедшие данные
+            data = [row for row in content['futoi']['data'] if dt_from <= datetime.strptime(f'{row[2]} {row[3]}', '%Y-%m-%d %H:%M:%S') <= dt_till]  # Пришедшие данные с фильтром по дате/времени запроса
             if all_data is None:  # Если это первые пришедшие данные
+                content['futoi']['data'] = data
                 all_data = content  # то сохраняем их полностью
             elif len(data) > 0:  # Если данные уже есть и пришли не пустые
                 all_data['futoi']['data'].extend(data)  # то добавляем к уже имеющимся
