@@ -24,7 +24,7 @@ dependencies = [
   "keyring>=25.7.0",
   "requests>=1.78.0",
   "websockets",
-  "stomp"
+  "stomp-py"
 ]
 
 [project.urls]
